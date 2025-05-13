@@ -3,14 +3,16 @@ package leasing
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 var ErrAccuireLeaseLimit = fmt.Errorf("account has reached the maximum number of leases")
 var ErrLeaseNotExists = fmt.Errorf("lease not exists")
 
 type AcquireSpec struct {
-	LeaseID   string
-	AccountID string
+	LeaseID         string
+	AccountID       string
+	InitialLifetime time.Duration
 }
 
 type Lease struct {
