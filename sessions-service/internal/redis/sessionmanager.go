@@ -12,6 +12,7 @@ import (
 
 const LeasesLimitPerAccount = 5
 const LeaseInitialLifetime = 3 * time.Minute
+const LeaseRenewalLifetime = 1 * time.Minute
 
 const (
 	LeaseKeyPrefix         = "lease:"         // lease:<leaseId> -> JSON of Lease
@@ -152,6 +153,55 @@ func (m *SessionsManager) ReleaseLease(ctx context.Context, leaseID string) erro
 		return mapRedisLuaScriptError(redisErr)
 	}
 	return nil
+}
+
+func (m *SessionsManager) RenewLease(ctx context.Context, leaseID string) error {
+	lease, err := m.getLease(ctx, leaseID)
+	if err != nil {
+		return err
+	}
+	if lease == nil {
+		return leasing.ErrLeaseNotExists
+	}
+
+	currentExpireAt, err := m.redisClient.ZScore(ctx, ActiveLeasesKey, leaseID).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return leasing.ErrLeaseNotExists
+		}
+	}
+
+	if currentExpireAt < float64(time.Now().UTC().Unix()) {
+		return leasing.ErrLeaseNotExists
+	}
+
+	expireAt := time.Now().UTC().Add(LeaseRenewalLifetime)
+	_, err = m.redisClient.ZAdd(ctx, ActiveLeasesKey, redis.Z{
+		Score:  float64(expireAt.Unix()),
+		Member: leaseID,
+	}).Result()
+	return err
+}
+
+func (m *SessionsManager) ExpireLeases(ctx context.Context) (int, error) {
+	expiredLeasesCount := 0
+	leaseIDs, err := m.redisClient.ZRangeByScore(ctx, ActiveLeasesKey, &redis.ZRangeBy{
+		Min:    "0",
+		Max:    fmt.Sprintf("%d", time.Now().UTC().Unix()),
+		Offset: 0,
+		Count:  1000,
+	}).Result()
+	if err != nil {
+		return 0, err
+	}
+
+	for _, leaseID := range leaseIDs {
+		err = m.ReleaseLease(ctx, leaseID)
+		if err != nil {
+			expiredLeasesCount++
+		}
+	}
+	return expiredLeasesCount, err
 }
 
 func (m *SessionsManager) getLease(ctx context.Context, leaseID string) (*leasing.Lease, error) {
